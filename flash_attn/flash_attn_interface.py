@@ -477,7 +477,7 @@ class FlashAttnQKVPackedFunc(torch.autograd.Function):
             window_size_right=window_size[1],
             softcap=softcap,
             alibi_slopes=alibi_slopes,
-            return_softmax=return_softmax and dropout_p > 0,
+            return_softmax=return_softmax,
         )
         if is_grad:
             ctx.save_for_backward(q, k, v, out_padded, softmax_lse, rng_state)
@@ -565,7 +565,7 @@ class FlashAttnVarlenQKVPackedFunc(torch.autograd.Function):
             window_size_right=window_size[1],
             softcap=softcap,
             alibi_slopes=alibi_slopes,
-            return_softmax=return_softmax and dropout_p > 0,
+            return_softmax=return_softmax,
             block_table=None,
         )
         if is_grad:
@@ -656,7 +656,7 @@ class FlashAttnKVPackedFunc(torch.autograd.Function):
             window_size_right=window_size[1],
             softcap=softcap,
             alibi_slopes=alibi_slopes,
-            return_softmax=return_softmax and dropout_p > 0,
+            return_softmax=return_softmax,
         )
         if is_grad:
             ctx.save_for_backward(q, k, v, out_padded, softmax_lse, rng_state)
@@ -751,7 +751,7 @@ class FlashAttnVarlenKVPackedFunc(torch.autograd.Function):
             window_size_right=window_size[1],
             softcap=softcap,
             alibi_slopes=alibi_slopes,
-            return_softmax=return_softmax and dropout_p > 0,
+            return_softmax=return_softmax,
             block_table=None,
         )
         if is_grad:
@@ -847,7 +847,7 @@ class FlashAttnFunc(torch.autograd.Function):
             window_size_right=window_size[1],
             softcap=softcap,
             alibi_slopes=alibi_slopes,
-            return_softmax=return_softmax and dropout_p > 0,
+            return_softmax=return_softmax,
         )
         if is_grad:
             ctx.save_for_backward(q, k, v, out_padded, softmax_lse, rng_state)
@@ -942,7 +942,7 @@ class FlashAttnVarlenFunc(torch.autograd.Function):
             window_size_right=window_size[1],
             softcap=softcap,
             alibi_slopes=alibi_slopes,
-            return_softmax=return_softmax and dropout_p > 0,
+            return_softmax=return_softmax,
             block_table=block_table,
         )
         if is_grad:

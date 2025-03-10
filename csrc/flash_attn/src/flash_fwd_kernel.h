@@ -324,6 +324,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         if constexpr (Is_softcap){
             FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
         }
+        Tensor rP = FLASH_NAMESPACE::convert_type<Element>(acc_s);
+        if (Return_softmax) {
+            cute::copy(rP, tSgS);
+            tSgS.data() = tSgS.data() + (-kBlockN);
+        }
 
         mask.template apply_mask<Is_causal, Is_even_MN>(
             acc_s, n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
@@ -344,18 +349,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             : softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_causal || Is_local>(acc_s, acc_o, params.scale_softmax_log2);
 
         // Convert acc_s from fp32 to fp16/bf16
-        Tensor rP = FLASH_NAMESPACE::convert_type<Element>(acc_s);
         int block_row_idx = m_block * (kBlockM / 16) + tidx / 32;
         int block_col_idx = n_block * (kBlockN / 32);
-        if (Return_softmax) {
-            Tensor rP_drop = make_fragment_like(rP);
-            cute::copy(rP, rP_drop);
-            dropout.template apply_dropout</*encode_dropout_in_sign_bit=*/true>(
-                rP_drop, block_row_idx, block_col_idx, kNWarps
-            );
-            cute::copy(rP_drop, tSgS);
-            tSgS.data() = tSgS.data() + (-kBlockN);
-        }
         if (Is_dropout) {
             dropout.apply_dropout(rP, block_row_idx, block_col_idx, kNWarps);
         }
@@ -390,6 +385,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         if constexpr (Is_softcap){
             FLASH_NAMESPACE::apply_softcap(acc_s, params.softcap);
         }
+        Tensor rP = FLASH_NAMESPACE::convert_type<Element>(acc_s);
+        if (Return_softmax) {
+            cute::copy(rP, tSgS);
+            tSgS.data() = tSgS.data() + (-kBlockN);
+        }
 
         FLASH_NAMESPACE::cp_async_wait<0>();
         __syncthreads();
@@ -406,18 +406,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
         softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_local>(acc_s, acc_o, params.scale_softmax_log2);
 
-        Tensor rP = FLASH_NAMESPACE::convert_type<Element>(acc_s);
         int block_row_idx = m_block * (kBlockM / 16) + tidx / 32;
         int block_col_idx = n_block * (kBlockN / 32);
-        if (Return_softmax) {
-            Tensor rP_drop = make_fragment_like(rP);
-            cute::copy(rP, rP_drop);
-            dropout.template apply_dropout</*encode_dropout_in_sign_bit=*/true>(
-                rP_drop, block_row_idx, block_col_idx, kNWarps
-            );
-            cute::copy(rP_drop, tSgS);
-            tSgS.data() = tSgS.data() + (-kBlockN);
-        }
         if (Is_dropout) {
             dropout.apply_dropout(rP, block_row_idx, block_col_idx, kNWarps);
         }
