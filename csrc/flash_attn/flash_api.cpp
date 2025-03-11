@@ -50,7 +50,9 @@ void set_params_fprop(Flash_fwd_params &params,
                       int window_size_right,
                       const float softcap,
                       bool seqlenq_ngroups_swapped=false,
-                      const bool unpadded_lse=false) {
+                      const bool unpadded_lse=false,
+                      c10::optional<const at::Tensor> topk,
+                      int block_size) {
 
     // Reset the parameters
     params = {};
@@ -156,6 +158,27 @@ void set_params_fprop(Flash_fwd_params &params,
 
     params.unpadded_lse = unpadded_lse;
     params.seqlenq_ngroups_swapped = seqlenq_ngroups_swapped;
+
+    // Add topk parameter handling
+    if (topk.has_value()) {
+        auto topk_ = topk.value();
+        TORCH_CHECK(topk_.dtype() == torch::kInt32, "topk must have dtype int32");
+        TORCH_CHECK(topk_.is_cuda(), "topk must be on CUDA device");
+        TORCH_CHECK(topk_.is_contiguous(), "topk must be contiguous");
+        params.topk = static_cast<int*>(topk_.data_ptr());
+        params.topk_batch_stride = topk_.stride(0);
+        params.topk_head_stride = topk_.stride(1); 
+        params.topk_seqlen_stride = topk_.stride(2);
+        params.topk_topk_stride = topk_.stride(3);
+        params.block_size = block_size;  // 根据实际block设置
+    } else {
+        params.topk = nullptr;
+        params.topk_batch_stride = 0;
+        params.topk_head_stride = 0;
+        params.topk_seqlen_stride = 0;
+        params.topk_topk_stride = 0;
+        params.block_size = 0;
+    }
 }
 
 void set_params_dgrad(Flash_bwd_params &params,
@@ -360,7 +383,9 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x round_mult
         int window_size_right,
         const float softcap,
         const bool return_softmax,
-        std::optional<at::Generator> gen_) {
+        std::optional<at::Generator> gen_,
+        c10::optional<const at::Tensor> topk,
+        int block_size) {
 
     // Otherwise the kernel will be launched from cuda:0 device
     at::cuda::CUDAGuard device_guard{q.device()};
@@ -465,8 +490,9 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x round_mult
                      softmax_scale,
                      window_size_left,
                      window_size_right,
-                     softcap
-                     );
+                     softcap,
+                     topk,
+                     get_num_sm(get_current_device()));
 
     // Keep references to these tensors to extend their lifetime
     at::Tensor softmax_lse_accum, out_accum;
@@ -507,6 +533,15 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x round_mult
         q = q.transpose(1, 2).reshape({batch_size, 1, num_heads_k * seqlen_q, head_size});
         softmax_lse = softmax_lse.reshape({batch_size, num_heads_k * seqlen_q, 1});
     }
+
+    if (topk.has_value()) {
+        auto topk_ = topk.value();
+        TORCH_CHECK(topk_.dtype() == torch::kInt32, "topk must have dtype int32");
+        TORCH_CHECK(topk_.is_cuda(), "topk must be on CUDA device");
+        TORCH_CHECK(topk_.is_contiguous(), "topk must be contiguous");
+        CHECK_SHAPE(topk_, batch_size, seqlen_k);
+    }
+
     return {out, softmax_lse, p, rng_state};
 }
 
@@ -531,7 +566,8 @@ mha_varlen_fwd(at::Tensor &q,  // total_q x num_heads x head_size, total_q := \s
                int window_size_right,
                const float softcap,
                const bool return_softmax,
-               std::optional<at::Generator> gen_) {
+               std::optional<at::Generator> gen_,
+               c10::optional<const at::Tensor> topk) {
 
     // Otherwise the kernel will be launched from cuda:0 device
     at::cuda::CUDAGuard device_guard{q.device()};
@@ -683,8 +719,11 @@ mha_varlen_fwd(at::Tensor &q,  // total_q x num_heads x head_size, total_q := \s
                      window_size_right,
                      softcap,
                      seqlenq_ngroups_swapped,
-                     /*unpadded_lse*/true);
+                     /*unpadded_lse*/true,
+                     topk,
+                     get_num_sm(get_current_device()));
     params.total_q = total_q;
+    params.block_size = block_size;  // Assign the block_size parameter
 
     if (paged_KV) {
         params.block_table = block_table.data_ptr<int>();
@@ -747,6 +786,14 @@ mha_varlen_fwd(at::Tensor &q,  // total_q x num_heads x head_size, total_q := \s
         out = out.reshape(size_before).transpose(1, 2).reshape(size_after);
         q = q.reshape(size_before).transpose(1, 2).reshape(size_after);
         softmax_lse = softmax_lse.reshape({num_heads * max_seqlen_q, batch_size});
+    }
+
+    if (topk.has_value()) {
+        auto topk_ = topk.value();
+        TORCH_CHECK(topk_.dtype() == torch::kInt32, "topk must have dtype int32");
+        TORCH_CHECK(topk_.is_cuda(), "topk must be on CUDA device");
+        TORCH_CHECK(topk_.is_contiguous(), "topk must be contiguous");
+        CHECK_SHAPE(topk_, batch_size, max_seqlen_k);
     }
 
     return {out, softmax_lse, p, rng_state};
@@ -1217,8 +1264,9 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
                 int window_size_right,
                 const float softcap,
                 bool is_rotary_interleaved,   // if true, rotary combines indices 0 & 1, else indices 0 & rotary_dim / 2
-                int num_splits
-                ) {
+                int num_splits,
+                c10::optional<const at::Tensor> topk,
+                int block_size) {
 
     // Otherwise the kernel will be launched from cuda:0 device
     at::cuda::CUDAGuard device_guard{q.device()};
@@ -1344,8 +1392,10 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
                      softmax_scale,
                      window_size_left,
                      window_size_right,
-                     softcap
-                     );
+                     softcap,
+                     topk,
+                     get_num_sm(get_current_device()),
+                     block_size);
 
     at::Tensor k, v, k_padded, v_padded;
     if (k_.has_value()) {
@@ -1469,6 +1519,15 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
         out = out.transpose(1, 2).reshape({batch_size, 1, num_heads_k * seqlen_q, head_size_og});
         softmax_lse = softmax_lse.reshape({batch_size, num_heads_k * seqlen_q, 1});
     }
+
+    if (topk.has_value()) {
+        auto topk_ = topk.value();
+        TORCH_CHECK(topk_.dtype() == torch::kInt32, "topk must have dtype int32");
+        TORCH_CHECK(topk_.is_cuda(), "topk must be on CUDA device");
+        TORCH_CHECK(topk_.is_contiguous(), "topk must be contiguous");
+        CHECK_SHAPE(topk_, batch_size, max_seqlen_k);
+    }
+
     return {out, softmax_lse};
 }
 } // namespace FLASH_NAMESPACE
@@ -1479,5 +1538,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("varlen_fwd", &FLASH_NAMESPACE::mha_varlen_fwd, "Forward pass (variable length)");
     m.def("bwd", &FLASH_NAMESPACE::mha_bwd, "Backward pass");
     m.def("varlen_bwd", &FLASH_NAMESPACE::mha_varlen_bwd, "Backward pass (variable length)");
-    m.def("fwd_kvcache", &FLASH_NAMESPACE::mha_fwd_kvcache, "Forward pass, with KV-cache");
+    m.def("fwd_kvcache", &FLASH_NAMESPACE::mha_fwd_kvcache, "Forward pass, with KV-cache",
+        py::arg("q"), ..., py::arg("topk") = nullptr, py::arg("block_size") = 0);
 }

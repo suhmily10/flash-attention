@@ -140,6 +140,14 @@ struct Flash_fwd_params : public Qkv_params {
 
     bool unpadded_lse;  // For varlen paths: LSE is in [nheads, total_seqlen_q] format instead of [b, nheads, seqlen_q].
     bool seqlenq_ngroups_swapped;  // q has been transposed from (b, 1, (nheads_kv ngroups), d) to (b, ngroups, nheads_kv, d).
+
+    // 添加topk相关参数
+    int* __restrict__ topk_ptr;
+    index_t topk_batch_stride;
+    index_t topk_head_stride;
+    index_t topk_seqlen_stride;
+    index_t topk_topk_stride;
+    int block_size;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

@@ -108,21 +108,25 @@ __forceinline__ __device__ void apply_mask_causal_w_idx(
     }
 }
 
-template <bool Is_causal, bool Is_local, bool Has_alibi>
+template <bool Is_causal, bool Is_local, bool Has_alibi, bool Has_topk>
 struct Mask {
 
     const int max_seqlen_k, max_seqlen_q;
     const int window_size_left, window_size_right;
     const float alibi_slope;
+    const int* topk_ptr;
+    const int block_size;
 
     __forceinline__ __device__ Mask(const int max_seqlen_k, const int max_seqlen_q,
                                     const int window_size_left, const int window_size_right,
-                                    const float alibi_slope=0.f)
+                                    const float alibi_slope=0.f, const int* topk_ptr=nullptr, const int block_size=32)
         : max_seqlen_k(max_seqlen_k)
         , max_seqlen_q(max_seqlen_q)
         , window_size_left(window_size_left)
         , window_size_right(window_size_right)
-        , alibi_slope(!Has_alibi ? 0.0 : alibi_slope) {
+        , alibi_slope(!Has_alibi ? 0.0 : alibi_slope)
+        , topk_ptr(topk_ptr)
+        , block_size(block_size) {
     };
 
     // Causal_mask: whether this particular iteration needs causal masking
@@ -134,7 +138,7 @@ struct Mask {
         static_assert(!(Causal_mask && Is_local), "Cannot be both causal and local");
         static_assert(Layout::rank == 3, "Only support 3D Tensor");
         static_assert(decltype(size<0>(tensor_))::value == 4, "First dimension must be 4");
-        static constexpr bool Need_masking = Has_alibi || Causal_mask || Is_local || !Is_even_MN;
+        static constexpr bool Need_masking = Has_alibi || Causal_mask || Is_local || !Is_even_MN || Has_topk;
         // if (cute::thread0()) { printf("Has_alibi = %d, Causal_mask=%d, Is_local=%d, Is_even_MN = %d, Need_masking = %d\n", Has_alibi, Causal_mask, Is_local, Is_even_MN, Need_masking); }
         if constexpr (Need_masking) {
             // Reshape tensor_ from (MMA=4, MMA_M, MMA_N) to (nrow=(2, MMA_M), ncol=(2, MMA_N))
@@ -201,6 +205,43 @@ struct Mask {
                                         tensor(make_coord(i, mi), make_coord(j, nj)) = -INFINITY;
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if constexpr (Has_topk) {
+                const int batch = blockIdx.y;
+                const int head = blockIdx.z;
+                const int seqlen = row_idx_offset + i * 8 + mi * warp_row_stride;
+                
+                #pragma unroll
+                for (int nj = 0; nj < size<1, 1>(tensor); ++nj) {
+                    const int col_idx_base = col_idx_offset + nj * 8;
+                    #pragma unroll
+                    for (int j = 0; j < size<1, 0>(tensor); ++j) {
+                        const int col_idx = col_idx_base + j;
+                        bool in_topk = false;
+                        
+                        // Check if current column is in topk
+                        #pragma unroll
+                        for (int k = 0; k < block_size; ++k) {
+                            int block_idx = topk_ptr[batch * topk_batch_stride + 
+                                                   head * topk_head_stride +
+                                                   seqlen * topk_seqlen_stride +
+                                                   k * topk_topk_stride];
+                            if (col_idx >= block_idx * block_size && 
+                                col_idx < (block_idx + 1) * block_size) {
+                                in_topk = true;
+                                break;
+                            }
+                        }
+                        
+                        if (!in_topk) {
+                            #pragma unroll
+                            for (int mi = 0; mi < size<0>(tensor); ++mi) {
+                                tensor(mi, make_coord(j, nj)) = -INFINITY;
                             }
                         }
                     }
