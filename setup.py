@@ -162,14 +162,14 @@ if not SKIP_CUDA_BUILD and not IS_ROCM:
     # cc_flag.append("-gencode")
     # cc_flag.append("arch=compute_75,code=sm_75")
     # A100
-    cc_flag.append("-gencode")
-    cc_flag.append("arch=compute_80,code=sm_80")
+    # cc_flag.append("-gencode")
+    # cc_flag.append("arch=compute_80,code=sm_80")
     # Jetson Orin
     # cc_flag.append("-gencode")
     # cc_flag.append("arch=compute_87,code=sm_87")
     # # RTX4090
-    # cc_flag.append("-gencode")
-    # cc_flag.append("arch=compute_89,code=sm_89")
+    cc_flag.append("-gencode")
+    cc_flag.append("arch=compute_89,code=sm_89")
 
     # if CUDA_HOME is not None:
     #     if bare_metal_version >= Version("11.8"):

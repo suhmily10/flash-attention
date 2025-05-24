@@ -7,137 +7,182 @@ import os
 # 添加当前目录到Python路径，以便导入flash_attn
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from flash_attn import flash_attn_func
-from tests.test_flash_attn import attention_ref, attn_bias_from_alibi_slopes
+from flash_attn import flash_attn_with_kvcache
+from tests.test_flash_attn import attention_ref
 
-def test_flash_attn_splitkv_simple():
+def test_flash_attn_splitkv_real():
     """
-    简化版的 splitkv 测试，只测试前向传播，hdim=128, float16
+    真正的 splitkv 测试，使用 flash_attn_with_kvcache 和 num_splits 参数
     """
     device = "cuda"
     dtype = torch.float16
     
     # 测试配置
-    seqlen_q, seqlen_k = 128, 256  # 选择一个中等大小的配置
-    d = 128  # hdim = 128
-    causal = False
-    local = False
-    alibi = False
-    deterministic = False
-    swap_sq_sk = False
-    
-    if swap_sq_sk:
-        seqlen_q, seqlen_k = seqlen_k, seqlen_q
+    batch_size = 2
+    seqlen_q = 64
+    seqlen_k = 2048  # 使用较长的序列长度来体现 splitkv 的优势
+    nheads = 32
+    nheads_kv = 2  # 测试 GQA (Grouped Query Attention)
+    d = 128
     
     # 设置随机种子
     torch.random.manual_seed(0)
-    batch_size = 1
-    nheads = 12
-    window_size = (-1, -1) if not local else torch.randint(0, seqlen_k, (2,))
     
     # 创建输入张量
-    q = torch.randn(batch_size, seqlen_q, nheads, d, device=device, dtype=dtype, requires_grad=True)
-    k = torch.randn(batch_size, seqlen_k, nheads, d, device=device, dtype=dtype, requires_grad=True)
-    v = torch.randn(batch_size, seqlen_k, nheads, d, device=device, dtype=dtype, requires_grad=True)
+    q = torch.randn(batch_size, seqlen_q, nheads, d, device=device, dtype=dtype)
+    k_cache = torch.randn(batch_size, seqlen_k, nheads_kv, d, device=device, dtype=dtype)
+    v_cache = torch.randn(batch_size, seqlen_k, nheads_kv, d, device=device, dtype=dtype)
     
-    if alibi:
-        alibi_slopes = torch.rand(batch_size, nheads, device=device, dtype=torch.float32) * 0.3
-        attn_bias = attn_bias_from_alibi_slopes(alibi_slopes, seqlen_q, seqlen_k, causal=causal)
-    else:
-        alibi_slopes, attn_bias = None, None
+    # cache_seqlens 指定每个 batch 中 KV cache 的有效长度
+    cache_seqlens = torch.tensor([seqlen_k] * batch_size, dtype=torch.int32, device=device)
     
-    print(f"Testing splitkv forward pass with:")
-    print(f"  seqlen_q={seqlen_q}, seqlen_k={seqlen_k}")
-    print(f"  d={d}, dtype={dtype}")
-    print(f"  causal={causal}, local={local}, alibi={alibi}")
+    print(f"Testing real splitkv interface with:")
+    print(f"  batch_size={batch_size}, seqlen_q={seqlen_q}, seqlen_k={seqlen_k}")
+    print(f"  nheads={nheads}, nheads_kv={nheads_kv}, d={d}")
+    print(f"  dtype={dtype}")
     
-    # Flash Attention forward pass
+    # 测试不同的 num_splits 值
+    results = {}
+    
+    # 1. 测试 num_splits=1 (无分割)
+    print(f"\n{'='*60}")
+    print("Testing num_splits=1 (no splitting):")
     try:
-        out, lse, _ = flash_attn_func(
-            q,
-            k,
-            v,
-            0.0,
-            causal=causal,
-            window_size=window_size,
-            alibi_slopes=alibi_slopes,
-            deterministic=deterministic,
-            return_attn_probs=True,
+        out_nosplit, lse_nosplit = flash_attn_with_kvcache(
+            q=q,
+            k_cache=k_cache,
+            v_cache=v_cache,
+            cache_seqlens=cache_seqlens,
+            num_splits=1,
+            return_softmax_lse=True
         )
-        print("✓ Flash Attention forward pass successful")
+        print("✓ num_splits=1 successful")
+        results['nosplit'] = (out_nosplit, lse_nosplit)
     except Exception as e:
-        print(f"✗ Flash Attention forward pass failed: {e}")
+        print(f"✗ num_splits=1 failed: {e}")
         return False
     
-    # 参考实现
+    # 2. 测试 num_splits=4 (手动分割)
+    print(f"\n{'='*60}")
+    print("Testing num_splits=4 (manual splitting):")
     try:
-        out_ref, attn_ref = attention_ref(
-            q, k, v, None, None, attn_bias, 0.0, None, causal=causal, window_size=window_size
+        out_split4, lse_split4 = flash_attn_with_kvcache(
+            q=q,
+            k_cache=k_cache,
+            v_cache=v_cache,
+            cache_seqlens=cache_seqlens,
+            num_splits=4,
+            return_softmax_lse=True
+        )
+        print("✓ num_splits=4 successful")
+        results['split4'] = (out_split4, lse_split4)
+    except Exception as e:
+        print(f"✗ num_splits=4 failed: {e}")
+        return False
+    
+    # 3. 测试 num_splits=0 (自动启发式分割)
+    print(f"\n{'='*60}")
+    print("Testing num_splits=0 (heuristic splitting):")
+    try:
+        out_heuristic, lse_heuristic = flash_attn_with_kvcache(
+            q=q,
+            k_cache=k_cache,
+            v_cache=v_cache,
+            cache_seqlens=cache_seqlens,
+            num_splits=0,
+            return_softmax_lse=True
+        )
+        print("✓ num_splits=0 (heuristic) successful")
+        results['heuristic'] = (out_heuristic, lse_heuristic)
+    except Exception as e:
+        print(f"✗ num_splits=0 failed: {e}")
+        return False
+    
+    # 4. 参考实现 (用于数值验证)
+    print(f"\n{'='*60}")
+    print("Computing reference implementation:")
+    try:
+        # 将 k_cache 和 v_cache 扩展到匹配 q 的 head 数量 (GQA)
+        k_cache_expanded = k_cache.repeat_interleave(nheads // nheads_kv, dim=2)
+        v_cache_expanded = v_cache.repeat_interleave(nheads // nheads_kv, dim=2)
+        
+        out_ref, _ = attention_ref(
+            q, k_cache_expanded, v_cache_expanded,
+            None, None, None, 0.0, None,
+            causal=False, window_size=(-1, -1)
         )
         print("✓ Reference implementation successful")
+        results['reference'] = out_ref
     except Exception as e:
         print(f"✗ Reference implementation failed: {e}")
         return False
     
-    # PyTorch 参考实现 (upcast=False, reorder_ops=True)
-    try:
-        out_pt, attn_pt = attention_ref(
-            q,
-            k,
-            v,
-            None,
-            None,
-            attn_bias,
-            0.0,
-            None,
-            causal=causal,
-            window_size=window_size,
-            upcast=False,
-            reorder_ops=True,
-        )
-        print("✓ PyTorch reference implementation successful")
-    except Exception as e:
-        print(f"✗ PyTorch reference implementation failed: {e}")
-        return False
-    
     # 数值精度检查
-    max_diff = (out - out_ref).abs().max().item()
-    mean_diff = (out - out_ref).abs().mean().item()
-    pt_max_diff = (out_pt - out_ref).abs().max().item()
-    pt_mean_diff = (out_pt - out_ref).abs().mean().item()
+    print(f"\n{'='*60}")
+    print("Numerical accuracy checks:")
     
-    print(f"\nNumerical Results:")
-    print(f"  Flash Attention vs Reference:")
-    print(f"    Max diff: {max_diff:.6f}")
-    print(f"    Mean diff: {mean_diff:.6f}")
-    print(f"  PyTorch vs Reference:")
-    print(f"    Max diff: {pt_max_diff:.6f}")
-    print(f"    Mean diff: {pt_mean_diff:.6f}")
+    accuracy_ok = True
     
-    # 检查精度是否在合理范围内
-    tolerance = 2 * pt_max_diff + 1e-5
-    if max_diff <= tolerance:
-        print(f"✓ Numerical accuracy check passed (max_diff <= {tolerance:.6f})")
-        accuracy_ok = True
-    else:
-        print(f"✗ Numerical accuracy check failed (max_diff > {tolerance:.6f})")
-        accuracy_ok = False
+    # 检查不同 splitkv 设置之间的一致性
+    for name1, name2 in [('nosplit', 'split4'), ('nosplit', 'heuristic'), ('split4', 'heuristic')]:
+        if name1 in results and name2 in results:
+            out1, lse1 = results[name1]
+            out2, lse2 = results[name2]
+            
+            max_diff_out = (out1 - out2).abs().max().item()
+            mean_diff_out = (out1 - out2).abs().mean().item()
+            max_diff_lse = (lse1 - lse2).abs().max().item()
+            mean_diff_lse = (lse1 - lse2).abs().mean().item()
+            
+            print(f"  {name1} vs {name2}:")
+            print(f"    Output max diff: {max_diff_out:.8f}")
+            print(f"    Output mean diff: {mean_diff_out:.8f}")
+            print(f"    LSE max diff: {max_diff_lse:.8f}")
+            print(f"    LSE mean diff: {mean_diff_lse:.8f}")
+            
+            # splitkv 之间应该完全一致
+            if max_diff_out > 1e-3 or max_diff_lse > 1e-3:
+                print(f"    ✗ Difference too large between {name1} and {name2}")
+                accuracy_ok = False
+            else:
+                print(f"    ✓ Consistent results between {name1} and {name2}")
+    
+    # 与参考实现比较
+    if 'reference' in results and 'nosplit' in results:
+        out_nosplit, _ = results['nosplit']
+        out_ref = results['reference']
+        
+        max_diff_ref = (out_nosplit - out_ref).abs().max().item()
+        mean_diff_ref = (out_nosplit - out_ref).abs().mean().item()
+        
+        print(f"  Flash Attention vs Reference:")
+        print(f"    Max diff: {max_diff_ref:.8f}")
+        print(f"    Mean diff: {mean_diff_ref:.8f}")
+        
+        # 与参考实现的误差应该在合理范围内
+        if max_diff_ref > 2e-3:  # 允许较大的数值误差，因为使用了 float16
+            print(f"    ✗ Difference too large vs reference")
+            accuracy_ok = False
+        else:
+            print(f"    ✓ Acceptable difference vs reference")
     
     # 总结
-    print(f"\n{'='*50}")
-    print(f"Test Summary (Forward Pass Only):")
-    print(f"  Forward pass: {'✓ PASSED' if accuracy_ok else '✗ FAILED'}")
+    print(f"\n{'='*60}")
+    print(f"Test Summary:")
+    print(f"  SplitKV interface: ✓ WORKING")
+    print(f"  Multiple split configurations: ✓ TESTED")
+    print(f"  Numerical accuracy: {'✓ PASSED' if accuracy_ok else '✗ FAILED'}")
     print(f"  Overall: {'✓ PASSED' if accuracy_ok else '✗ FAILED'}")
-    print(f"{'='*50}")
+    print(f"{'='*60}")
     
     return accuracy_ok
 
 if __name__ == "__main__":
-    print("Flash Attention Split-KV Test (Forward Pass Only, hdim=128, float16)")
+    print("Flash Attention Split-KV Test (Real Interface)")
     print("=" * 60)
     
     if torch.cuda.is_available():
-        success = test_flash_attn_splitkv_simple()
+        success = test_flash_attn_splitkv_real()
         sys.exit(0 if success else 1)
     else:
         print("CUDA is not available!")
