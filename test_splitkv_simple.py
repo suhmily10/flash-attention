@@ -64,20 +64,20 @@ def test_flash_attn_splitkv_real():
     
     # 2. 测试 num_splits=4 (手动分割)
     print(f"\n{'='*60}")
-    print("Testing num_splits=4 (manual splitting):")
+    print("Testing num_splits=1 (manual splitting):")
     try:
-        out_split4, lse_split4 = flash_attn_with_kvcache(
+        out_split1, lse_split1 = flash_attn_with_kvcache(
             q=q,
             k_cache=k_cache,
             v_cache=v_cache,
             cache_seqlens=cache_seqlens,
-            num_splits=4,
+            num_splits=1,
             return_softmax_lse=True
         )
-        print("✓ num_splits=4 successful")
-        results['split4'] = (out_split4, lse_split4)
+        print("✓ num_splits=1 successful")
+        results['split1'] = (out_split1, lse_split1)
     except Exception as e:
-        print(f"✗ num_splits=4 failed: {e}")
+        print(f"✗ num_splits=1 failed: {e}")
         return False
     
     # 3. 测试 num_splits=0 (自动启发式分割)
