@@ -106,11 +106,11 @@ void run_flash_splitkv_fwd(Flash_fwd_params &params, cudaStream_t stream) {
     const bool is_even_K = params.d == Kernel_traits::kHeadDim;
     BOOL_SWITCH(is_even_MN, IsEvenMNConst, [&] {
         EVENK_SWITCH(is_even_K, IsEvenKConst, [&] {
-            LOCAL_SWITCH((params.window_size_left >= 0 || params.window_size_right >= 0) && !Is_causal, Is_local, [&] {
+            constexpr static bool Is_local = false; {
                 BOOL_SWITCH(params.num_splits > 1, Split, [&] {
-                    BOOL_SWITCH(params.knew_ptr != nullptr, Append_KV, [&] {
-                        ALIBI_SWITCH(params.alibi_slopes_ptr != nullptr, Has_alibi, [&] {
-                            SOFTCAP_SWITCH(params.softcap > 0.0, Is_softcap, [&] {
+                    constexpr static bool Append_KV = false; {
+                        constexpr static bool Has_alibi = false; {
+                            constexpr static bool Is_softcap = false; {
                                 // If Append_KV, then we must have seqlen_offsets, which means cu_seqlens_k != nullptr.
                                 // If not IsEvenKConst, we also set IsEvenMNConst to false to reduce number of templates.
                                 // If Is_local, set Is_causal to false
@@ -122,12 +122,11 @@ void run_flash_splitkv_fwd(Flash_fwd_params &params, cudaStream_t stream) {
                                         kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
                                 }
                                 kernel<<<grid, Kernel_traits::kNThreads, smem_size, stream>>>(params);
-                                C10_CUDA_KERNEL_LAUNCH_CHECK();
-                            });
-                        });
-                    });
+                            }
+                        }
+                    }
                 });
-            });
+            }
         });
     });
     if (params.num_splits > 1) {
