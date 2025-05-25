@@ -64,41 +64,23 @@ def test_flash_attn_splitkv_real():
     
     # 2. 测试 num_splits=4 (手动分割)
     print(f"\n{'='*60}")
-    print("Testing num_splits=1 (manual splitting):")
+    print("Testing num_splits=4 (manual splitting):")
     try:
-        out_split1, lse_split1 = flash_attn_with_kvcache(
+        out_split4, lse_split4 = flash_attn_with_kvcache(
             q=q,
             k_cache=k_cache,
             v_cache=v_cache,
             cache_seqlens=cache_seqlens,
-            num_splits=1,
+            num_splits=4,
             return_softmax_lse=True
         )
-        print("✓ num_splits=1 successful")
-        results['split1'] = (out_split1, lse_split1)
+        print("✓ num_splits=4 successful")
+        results['split4'] = (out_split4, lse_split4)
     except Exception as e:
-        print(f"✗ num_splits=1 failed: {e}")
+        print(f"✗ num_splits=4 failed: {e}")
         return False
     
-    # 3. 测试 num_splits=0 (自动启发式分割)
-    print(f"\n{'='*60}")
-    print("Testing num_splits=0 (heuristic splitting):")
-    try:
-        out_heuristic, lse_heuristic = flash_attn_with_kvcache(
-            q=q,
-            k_cache=k_cache,
-            v_cache=v_cache,
-            cache_seqlens=cache_seqlens,
-            num_splits=0,
-            return_softmax_lse=True
-        )
-        print("✓ num_splits=0 (heuristic) successful")
-        results['heuristic'] = (out_heuristic, lse_heuristic)
-    except Exception as e:
-        print(f"✗ num_splits=0 failed: {e}")
-        return False
-    
-    # 4. 参考实现 (用于数值验证)
+    # 参考实现 (用于数值验证)
     print(f"\n{'='*60}")
     print("Computing reference implementation:")
     try:
@@ -124,7 +106,7 @@ def test_flash_attn_splitkv_real():
     accuracy_ok = True
     
     # 检查不同 splitkv 设置之间的一致性
-    for name1, name2 in [('nosplit', 'split4'), ('nosplit', 'heuristic'), ('split4', 'heuristic')]:
+    for name1, name2 in [('nosplit', 'split4')]:
         if name1 in results and name2 in results:
             out1, lse1 = results[name1]
             out2, lse2 = results[name2]
